@@ -75,6 +75,21 @@ RATE_LIMIT_SEARCH = os.getenv("RATE_LIMIT_SEARCH", "20/minute")
 RATE_LIMIT_PURCHASE = os.getenv("RATE_LIMIT_PURCHASE", "10/minute")
 RATE_LIMIT_DNS = os.getenv("RATE_LIMIT_DNS", "30/minute")
 
+# Coinbase Onramp Configuration
+COINBASE_ONRAMP_APP_ID = os.getenv("COINBASE_ONRAMP_APP_ID", "")
+ONRAMP_API_KEY = os.getenv("ONRAMP_API_KEY", "")
+
+# Onramp Rate Limiting
+ONRAMP_MAX_REQUESTS_PER_HOUR = int(os.getenv("ONRAMP_MAX_REQUESTS_PER_HOUR", "10"))
+ONRAMP_MAX_AMOUNT_PER_TX = int(os.getenv("ONRAMP_MAX_AMOUNT_PER_TX", "10000"))
+ONRAMP_MAX_AMOUNT_PER_DAY = int(os.getenv("ONRAMP_MAX_AMOUNT_PER_DAY", "50000"))
+
+# Validate onramp config in production
+if IS_PRODUCTION and not COINBASE_ONRAMP_APP_ID:
+    raise RuntimeError("COINBASE_ONRAMP_APP_ID is required in production!")
+if IS_PRODUCTION and not ONRAMP_API_KEY:
+    raise RuntimeError("ONRAMP_API_KEY is required in production!")
+
 
 # Validation helpers
 def is_valid_eth_address(address: str) -> bool:

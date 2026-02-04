@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel, Field, field_validator
@@ -20,6 +20,14 @@ from . import config
 from .porkbun import porkbun
 from .payments import verifier
 from . import database as db
+from .onramp import (
+    OnrampRateLimiter,
+    generate_session_id,
+    generate_coinbase_onramp_url,
+    log_onramp_session,
+    validate_onramp_request,
+    session_logs
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -841,6 +849,102 @@ async def delete_dns_record(req: DNSRecordDelete, request: Request):
     except Exception as e:
         logger.error(f"DNS delete error: {e}")
         raise HTTPException(500, "An error occurred. Please try again.")
+
+
+# ============================================================================
+# ONRAMP ENDPOINTS
+# ============================================================================
+
+@app.post("/api/onramp/create-url")
+@limiter.limit("10/minute")
+async def create_onramp_url(
+    request: Request,
+    wallet_address: str = Body(...),
+    amount_usd: float = Body(...),
+    asset: str = Body("USDC"),
+    network: str = Body("base"),
+):
+    """
+    Create a secure Coinbase Onramp URL for wallet funding.
+    
+    Requires X-API-Key header for authentication.
+    Rate limited to 10 requests per minute per IP.
+    """
+    # Authentication
+    api_key = request.headers.get("x-api-key")
+    if not api_key or api_key != config.ONRAMP_API_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized - Invalid API key")
+    
+    # Get client IP
+    client_ip = request.client.host
+    
+    # Validate request
+    error = validate_onramp_request(wallet_address, amount_usd, asset, network)
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    
+    # Check rate limits
+    allowed, error = OnrampRateLimiter.check_rate_limit(client_ip)
+    if not allowed:
+        raise HTTPException(status_code=429, detail=error)
+    
+    # Check amount limits
+    allowed, error = OnrampRateLimiter.check_amount_limit(client_ip, amount_usd)
+    if not allowed:
+        raise HTTPException(status_code=429, detail=error)
+    
+    # Generate session ID
+    session_id = generate_session_id()
+    
+    # Generate Coinbase Onramp URL
+    onramp_url = generate_coinbase_onramp_url(
+        wallet_address=wallet_address,
+        amount_usd=amount_usd,
+        asset=asset,
+        network=network
+    )
+    
+    # Record request
+    OnrampRateLimiter.record_request(client_ip, amount_usd)
+    
+    # Log session
+    log_onramp_session(
+        session_id=session_id,
+        wallet_address=wallet_address,
+        amount_usd=amount_usd,
+        asset=asset,
+        network=network,
+        ip_address=client_ip
+    )
+    
+    logger.info(f"✅ Onramp URL created: {session_id} - ${amount_usd} {asset} for {wallet_address}")
+    
+    return {
+        "success": True,
+        "onrampUrl": onramp_url,
+        "sessionId": session_id
+    }
+
+
+@app.get("/api/onramp/logs")
+@limiter.limit("5/minute")
+async def get_onramp_logs(
+    request: Request,
+    limit: int = 100
+):
+    """
+    Get onramp session logs (admin endpoint).
+    Requires X-API-Key header.
+    """
+    # Authentication
+    api_key = request.headers.get("x-api-key")
+    if not api_key or api_key != config.ONRAMP_API_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    return {
+        "success": True,
+        "logs": session_logs[-limit:][::-1]  # Latest first
+    }
 
 
 # Main entry point

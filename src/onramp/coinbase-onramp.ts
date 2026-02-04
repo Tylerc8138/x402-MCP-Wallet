@@ -1,6 +1,7 @@
 /**
- * Coinbase Onramp Integration
- * Provides fiat-to-crypto onramp functionality for funding Base wallets
+ * Coinbase Onramp Integration with Secure Backend
+ * 
+ * Architecture: Frontend → Secure Backend → Coinbase Onramp (App ID)
  */
 
 import { exec } from 'child_process';
@@ -10,9 +11,8 @@ import * as os from 'os';
 const execAsync = promisify(exec);
 
 export interface OnrampConfig {
-  appId?: string; // Optional: Register at https://portal.cdp.coinbase.com/
-  defaultNetwork: string;
-  supportedAssets: string[];
+  backendUrl: string;
+  apiKey: string;
 }
 
 export interface FundWalletParams {
@@ -28,6 +28,7 @@ export interface FundWalletResult {
   expectedAmount: number;
   currency: string;
   onrampUrl: string;
+  sessionId: string;
   message: string;
   estimatedArrival: string;
 }
@@ -40,18 +41,16 @@ async function openBrowser(url: string): Promise<void> {
   
   try {
     switch (platform) {
-      case 'darwin': // macOS
+      case 'darwin':
         await execAsync(`open "${url}"`);
         break;
-      case 'win32': // Windows
+      case 'win32':
         await execAsync(`start "" "${url}"`);
         break;
       case 'linux':
-        // Try common Linux browsers
         try {
           await execAsync(`xdg-open "${url}"`);
         } catch {
-          // Fallback to specific browsers
           await execAsync(`firefox "${url}" || google-chrome "${url}" || chromium "${url}"`);
         }
         break;
@@ -65,42 +64,47 @@ async function openBrowser(url: string): Promise<void> {
 }
 
 /**
- * Generate Coinbase Onramp URL for funding wallet
+ * Request onramp URL from secure backend
  */
-export function generateOnrampUrl(params: FundWalletParams, config: OnrampConfig): string {
-  const {
-    walletAddress,
-    amountUSD,
-    asset = 'USDC',
-    network = 'base'
-  } = params;
-
-  // Build destination wallets parameter
-  const destinationWallets = [{
-    address: walletAddress,
-    blockchains: [network],
-    assets: [asset]
-  }];
-
-  // Build URL parameters
-  const urlParams = new URLSearchParams({
-    destinationWallets: JSON.stringify(destinationWallets),
-    defaultAsset: asset,
-    presetFiatAmount: amountUSD.toString(),
-    defaultNetwork: network,
-    defaultPaymentMethod: 'CARD' // Default to card payments
+async function requestOnrampUrl(
+  params: FundWalletParams,
+  config: OnrampConfig
+): Promise<{ onrampUrl: string; sessionId: string }> {
+  const { walletAddress, amountUSD, asset = 'USDC', network = 'base' } = params;
+  
+  console.log(`🔐 Requesting secure onramp URL from backend...`);
+  
+  const response = await fetch(`${config.backendUrl}/api/onramp/create-url`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': config.apiKey
+    },
+    body: JSON.stringify({
+      wallet_address: walletAddress,
+      amount_usd: amountUSD,
+      asset,
+      network
+    })
   });
-
-  // Add app ID if provided
-  if (config.appId) {
-    urlParams.append('appId', config.appId);
+  
+  if (!response.ok) {
+    const errorData: any = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail || `Backend error: ${response.status}`);
   }
-
-  return `https://pay.coinbase.com/buy/select-asset?${urlParams.toString()}`;
+  
+  const data: any = await response.json();
+  
+  if (!data.success || !data.onrampUrl) {
+    throw new Error('Failed to obtain onramp URL');
+  }
+  
+  console.log(`✅ Secure URL obtained (Session: ${data.sessionId})`);
+  return { onrampUrl: data.onrampUrl, sessionId: data.sessionId };
 }
 
 /**
- * Fund wallet via Coinbase Onramp
+ * Fund wallet via Coinbase Onramp with secure backend
  */
 export async function fundWalletViaCoinbase(
   params: FundWalletParams,
@@ -118,19 +122,28 @@ export async function fundWalletViaCoinbase(
     throw new Error('Invalid wallet address');
   }
 
-  // Generate onramp URL
-  const onrampUrl = generateOnrampUrl(params, config);
+  // Request secure URL from backend
+  let onrampUrl: string;
+  let sessionId: string;
+  
+  try {
+    const result = await requestOnrampUrl(params, config);
+    onrampUrl = result.onrampUrl;
+    sessionId = result.sessionId;
+  } catch (error) {
+    throw new Error(`Failed to create secure funding session: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
 
   // Open browser
   console.log(`\n🔗 Opening Coinbase Onramp...`);
   console.log(`💰 Amount: $${amountUSD} USD → ${asset}`);
   console.log(`🏦 Network: ${network}`);
-  console.log(`📍 Wallet: ${walletAddress}\n`);
+  console.log(`📍 Wallet: ${walletAddress}`);
+  console.log(`🔐 Session: ${sessionId}\n`);
 
   try {
     await openBrowser(onrampUrl);
   } catch (error) {
-    // If browser fails to open, still return URL for manual access
     console.warn('Could not open browser automatically. Use URL below:');
     console.log(onrampUrl);
   }
@@ -141,18 +154,25 @@ export async function fundWalletViaCoinbase(
     expectedAmount: amountUSD,
     currency: asset,
     onrampUrl,
-    message: `Payment window opened in browser. Complete the purchase to add $${amountUSD} ${asset} to your wallet on ${network}.`,
+    sessionId,
+    message: `Secure payment window opened. Complete purchase to add $${amountUSD} ${asset} to your wallet on ${network}.`,
     estimatedArrival: '1-5 minutes after payment confirmation'
   };
 }
 
 /**
- * Create default Coinbase Onramp config
+ * Create Coinbase Onramp config
  */
 export function createOnrampConfig(): OnrampConfig {
+  const backendUrl = process.env.CLAWD_BACKEND_URL || 'http://localhost:8402';
+  const apiKey = process.env.CLAWD_BACKEND_API_KEY;
+  
+  if (!apiKey) {
+    throw new Error('CLAWD_BACKEND_API_KEY environment variable is required');
+  }
+  
   return {
-    appId: process.env.COINBASE_ONRAMP_APP_ID, // Optional: Set in env vars
-    defaultNetwork: 'base',
-    supportedAssets: ['USDC', 'ETH', 'USDT']
+    backendUrl,
+    apiKey
   };
 }
