@@ -2,15 +2,15 @@
 
 **C**laude's **L**ightweight **A**utonomous **W**allet for **D**evelopers
 
-A unified MCP server providing x402 payments, TAP identity verification, referral onboarding, and domain registration for Claude Code and other MCP clients.
+A unified MCP server providing x402 payments, Coinbase Onramp funding, TAP identity verification, referral onboarding, and domain registration for Claude Code and other MCP clients.
 
 ## Quick Start (5 minutes)
 
 ### 1. Install
 
 ```bash
-git clone https://github.com/csmoove530/unified-clawd-wallet-mcp.git
-cd unified-clawd-wallet-mcp
+git clone https://github.com/Tylerc8138/x402-MCP-Wallet.git
+cd x402-MCP-Wallet
 npm install && npm run build
 ```
 
@@ -75,6 +75,26 @@ Returns:
   }
 }
 ```
+
+### Fund Your Wallet (Coinbase Onramp)
+
+```
+You: "Add $50 to my wallet"
+```
+
+Returns:
+```json
+{
+  "success": true,
+  "walletAddress": "0x742d35Cc6634C0532925a3b844Bc9e7595f...",
+  "expectedAmount": 50,
+  "currency": "USDC",
+  "message": "Secure payment window opened. Complete purchase to add $50 USDC to your wallet on base.",
+  "estimatedArrival": "1-5 minutes after payment confirmation"
+}
+```
+
+A browser window opens with Coinbase Pay where you can purchase USDC with debit/credit card.
 
 ### Redeem a Referral Code (New Users)
 
@@ -156,9 +176,9 @@ Returns:
 
 ---
 
-## All 19 Tools
+## All 22 Tools
 
-### Wallet Tools (5)
+### Wallet Tools (6)
 
 | Tool | Description | Example |
 |------|-------------|---------|
@@ -167,6 +187,14 @@ Returns:
 | `x402_get_address` | Get wallet address for funding | `"What's my wallet address?"` |
 | `x402_transaction_history` | View recent payments | `"Show my last 5 transactions"` |
 | `x402_discover_services` | Find x402 services | `"Find AI services I can pay for"` |
+| `x402_fund_wallet` | Add USD via Coinbase Onramp | `"Add $50 to my wallet"` |
+
+### Security Tools (2)
+
+| Tool | Description | Example |
+|------|-------------|---------|
+| `x402_get_spending_controls` | View current spend limits | `"Show my spending limits"` |
+| `x402_update_spending_controls` | Update spend limits | `"Set my daily limit to $100"` |
 
 ### Referral Tools (1)
 
@@ -204,11 +232,19 @@ Returns:
 ### New User Onboarding
 
 ```
-1. "Redeem referral code CLAWD2024"     → Get $15 USDC
+1. "Add $50 to my wallet"                → Fund via Coinbase (card/bank)
 2. "Check my balance"                    → Verify funds arrived
 3. "Verify my identity"                  → Enable premium services
 4. "Search for domains with 'myproject'" → Find a domain
 5. "Buy myproject.xyz"                   → Purchase with USDC
+```
+
+### Alternative: Referral Code Onboarding
+
+```
+1. "Redeem referral code CLAWD2024"     → Get $15 USDC free
+2. "Check my balance"                    → Verify funds arrived
+3. "Verify my identity"                  → Enable premium services
 ```
 
 ### Domain + DNS Setup
@@ -279,6 +315,13 @@ Returns:
 **MCP Server:**
 
 ```bash
+# Coinbase Onramp (get from https://portal.cdp.coinbase.com/)
+CDP_PROJECT_ID=your_project_id
+CDP_API_KEY_NAME=organizations/your_org_id/apiKeys/your_key_id
+CDP_API_KEY_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----
+your_pkcs8_private_key_here
+-----END PRIVATE KEY-----"
+
 # Required for domain features
 CLAWD_BACKEND_URL=https://clawd-domain-backend-production.up.railway.app
 
@@ -289,6 +332,11 @@ CLAWD_TAP_MOCK_MODE=true                              # Demo mode (no real regis
 # Referral system (operators only)
 CLAWD_TREASURY_PRIVATE_KEY=0x...                      # Treasury wallet for payouts
 ```
+
+> **Note:** The private key from CDP portal comes as `EC PRIVATE KEY` format. Convert it to PKCS8:
+> ```bash
+> openssl pkcs8 -topk8 -nocrypt -in your_key.pem
+> ```
 
 **Backend (Railway deployment):**
 
@@ -310,6 +358,9 @@ ENVIRONMENT=production
       "command": "node",
       "args": ["/Users/you/clawd-wallet/dist/mcp-server/index.js"],
       "env": {
+        "CDP_PROJECT_ID": "your_project_id",
+        "CDP_API_KEY_NAME": "organizations/your_org_id/apiKeys/your_key_id",
+        "CDP_API_KEY_PRIVATE_KEY": "-----BEGIN PRIVATE KEY-----\nYOUR_KEY_HERE\n-----END PRIVATE KEY-----",
         "CLAWD_BACKEND_URL": "https://clawd-domain-backend-production.up.railway.app",
         "CLAWD_TAP_MOCK_MODE": "true"
       }
@@ -329,8 +380,8 @@ ENVIRONMENT=production
                           │ MCP Protocol (stdio)
                           ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  CLAWD Wallet MCP Server (19 tools)                         │
-│  ├─ Wallet: balance, payments, history                      │
+│  CLAWD Wallet MCP Server (22 tools)                         │
+│  ├─ Wallet: balance, payments, history, funding             │
 │  ├─ Referral: code redemption                               │
 │  ├─ TAP: identity verification                              │
 │  └─ Domains: search, purchase, DNS                          │
@@ -338,10 +389,10 @@ ENVIRONMENT=production
            │                      │
            │ USDC on Base         │ HTTPS
            ▼                      ▼
-┌──────────────────┐    ┌────────────────────┐
-│  Base Network    │    │  Domain Backend    │
-│  (x402 services) │    │  (Railway/FastAPI) │
-└──────────────────┘    └─────────┬──────────┘
+┌──────────────────┐    ┌────────────────────┐    ┌────────────────────┐
+│  Base Network    │    │  Domain Backend    │    │  Coinbase CDP      │
+│  (x402 services) │    │  (Railway/FastAPI) │    │  (Onramp API)      │
+└──────────────────┘    └─────────┬──────────┘    └────────────────────┘
                                   │
                                   ▼
                         ┌────────────────────┐
