@@ -37,6 +37,7 @@
     "url": "https://github.com/clawd/wallet-mcp.git"
   },
   "dependencies": {
+    "@coinbase/cdp-sdk": "^1.44.0",
     "@modelcontextprotocol/sdk": "^1.0.4",
     "@noble/ed25519": "^2.0.0",
     "chalk": "^5.3.0",

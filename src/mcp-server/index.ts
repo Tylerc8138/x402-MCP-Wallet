@@ -11,6 +11,9 @@
  * - Domain registration and DNS management (9 tools)
  */
 
+// Load environment variables from .env file
+import 'dotenv/config';
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {

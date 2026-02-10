@@ -1,18 +1,20 @@
 /**
- * Coinbase Onramp Integration with Secure Backend
- * 
- * Architecture: Frontend → Secure Backend → Coinbase Onramp (App ID)
+ * Coinbase Onramp Integration
+ *
+ * Uses the Session Token approach with EC (ES256) key signing.
+ * Based on: https://github.com/coinbase/onramp-demo-application
  */
 
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as os from 'os';
+import { SignJWT, importPKCS8 } from 'jose';
 
 const execAsync = promisify(exec);
 
 export interface OnrampConfig {
-  backendUrl: string;
-  apiKey: string;
+  apiKeyName: string;
+  privateKey: string;
 }
 
 export interface FundWalletParams {
@@ -38,7 +40,7 @@ export interface FundWalletResult {
  */
 async function openBrowser(url: string): Promise<void> {
   const platform = os.platform();
-  
+
   try {
     switch (platform) {
       case 'darwin':
@@ -64,47 +66,141 @@ async function openBrowser(url: string): Promise<void> {
 }
 
 /**
- * Request onramp URL from secure backend
+ * Generate a random nonce for JWT header
  */
-async function requestOnrampUrl(
-  params: FundWalletParams,
-  config: OnrampConfig
-): Promise<{ onrampUrl: string; sessionId: string }> {
-  const { walletAddress, amountUSD, asset = 'USDC', network = 'base' } = params;
-  
-  console.log(`🔐 Requesting secure onramp URL from backend...`);
-  
-  const response = await fetch(`${config.backendUrl}/api/onramp/create-url`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-API-Key': config.apiKey
-    },
-    body: JSON.stringify({
-      wallet_address: walletAddress,
-      amount_usd: amountUSD,
-      asset,
-      network
-    })
-  });
-  
-  if (!response.ok) {
-    const errorData: any = await response.json().catch(() => ({}));
-    throw new Error(errorData.detail || `Backend error: ${response.status}`);
-  }
-  
-  const data: any = await response.json();
-  
-  if (!data.success || !data.onrampUrl) {
-    throw new Error('Failed to obtain onramp URL');
-  }
-  
-  console.log(`✅ Secure URL obtained (Session: ${data.sessionId})`);
-  return { onrampUrl: data.onrampUrl, sessionId: data.sessionId };
+function generateNonce(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Buffer.from(bytes).toString('hex');
 }
 
 /**
- * Fund wallet via Coinbase Onramp with secure backend
+ * Generate JWT for Coinbase API authentication using EC key (ES256)
+ */
+async function generateJWT(
+  apiKeyName: string,
+  privateKey: string,
+  requestMethod: string,
+  requestHost: string,
+  requestPath: string
+): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const expiresIn = 120;
+
+  // Import the EC private key
+  const ecKey = await importPKCS8(privateKey, 'ES256');
+
+  // Create JWT claims
+  const claims = {
+    sub: apiKeyName,
+    iss: 'cdp',
+    uris: [`${requestMethod} ${requestHost}${requestPath}`],
+  };
+
+  // Sign and return the JWT
+  return await new SignJWT(claims)
+    .setProtectedHeader({
+      alg: 'ES256',
+      kid: apiKeyName,
+      typ: 'JWT',
+      nonce: generateNonce()
+    })
+    .setIssuedAt(now)
+    .setNotBefore(now)
+    .setExpirationTime(now + expiresIn)
+    .sign(ecKey);
+}
+
+/**
+ * Get session token from Coinbase Onramp API
+ */
+async function getSessionToken(
+  config: OnrampConfig,
+  walletAddress: string,
+  network: string,
+  assets: string[]
+): Promise<string> {
+  const host = 'api.developer.coinbase.com';
+  const path = '/onramp/v1/token';
+  const method = 'POST';
+
+  console.log('Generating JWT with API key:', config.apiKeyName.substring(0, 50) + '...');
+
+  // Generate JWT for authentication
+  const jwt = await generateJWT(
+    config.apiKeyName,
+    config.privateKey,
+    method,
+    host,
+    path
+  );
+
+  // Prepare request body
+  const body = {
+    addresses: [{
+      address: walletAddress,
+      blockchains: [network]
+    }],
+    assets: assets
+  };
+
+  console.log('Making request to CDP API...');
+
+  // Make request to Coinbase API
+  const response = await fetch(`https://${host}${path}`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'Authorization': `Bearer ${jwt}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  const responseText = await response.text();
+
+  if (!response.ok) {
+    console.error('CDP API error:', response.status, response.statusText);
+    console.error('Response body:', responseText);
+    throw new Error(`Coinbase API error (${response.status}): ${responseText}`);
+  }
+
+  // Parse successful response
+  let data;
+  try {
+    data = JSON.parse(responseText);
+  } catch (error) {
+    throw new Error(`Invalid response from CDP API: ${responseText}`);
+  }
+
+  if (!data.token) {
+    throw new Error('No token returned from Coinbase');
+  }
+
+  return data.token;
+}
+
+/**
+ * Generate Coinbase Onramp URL with session token
+ */
+function generateOnrampUrl(
+  sessionToken: string,
+  amountUSD: number,
+  asset: string,
+  network: string
+): string {
+  const params = new URLSearchParams({
+    sessionToken,
+    defaultAsset: asset,
+    defaultNetwork: network,
+    presetFiatAmount: String(amountUSD)
+  });
+
+  return `https://pay.coinbase.com/buy/select-asset?${params.toString()}`;
+}
+
+/**
+ * Fund wallet via Coinbase Onramp
  */
 export async function fundWalletViaCoinbase(
   params: FundWalletParams,
@@ -122,17 +218,23 @@ export async function fundWalletViaCoinbase(
     throw new Error('Invalid wallet address');
   }
 
-  // Request secure URL from backend
-  let onrampUrl: string;
-  let sessionId: string;
-  
+  console.log(`🔐 Generating Coinbase session token...`);
+
+  // Get session token
+  let sessionToken: string;
   try {
-    const result = await requestOnrampUrl(params, config);
-    onrampUrl = result.onrampUrl;
-    sessionId = result.sessionId;
+    sessionToken = await getSessionToken(config, walletAddress, network, [asset]);
   } catch (error) {
-    throw new Error(`Failed to create secure funding session: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    throw new Error(`Failed to get session token: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
+
+  // Generate session ID for tracking
+  const sessionId = Math.random().toString(36).substring(2, 15);
+
+  // Generate onramp URL
+  const onrampUrl = generateOnrampUrl(sessionToken, amountUSD, asset, network);
+
+  console.log(`✅ Session token obtained`);
 
   // Open browser
   console.log(`\n🔗 Opening Coinbase Onramp...`);
@@ -161,18 +263,29 @@ export async function fundWalletViaCoinbase(
 }
 
 /**
- * Create Coinbase Onramp config
+ * Create Coinbase Onramp config from environment variables
+ *
+ * Required environment variables:
+ * - CDP_API_KEY_NAME: Full API key name (organizations/{org_id}/apiKeys/{key_id})
+ * - CDP_API_KEY_PRIVATE_KEY: EC private key in PEM format
  */
 export function createOnrampConfig(): OnrampConfig {
-  const backendUrl = process.env.CLAWD_BACKEND_URL || 'http://localhost:8402';
-  const apiKey = process.env.CLAWD_BACKEND_API_KEY;
-  
-  if (!apiKey) {
-    throw new Error('CLAWD_BACKEND_API_KEY environment variable is required');
+  const apiKeyName = process.env.CDP_API_KEY_NAME;
+  const privateKey = process.env.CDP_API_KEY_PRIVATE_KEY;
+
+  if (!apiKeyName) {
+    throw new Error(
+      'CDP_API_KEY_NAME environment variable is required. ' +
+      'Format: organizations/{org_id}/apiKeys/{key_id}'
+    );
   }
-  
-  return {
-    backendUrl,
-    apiKey
-  };
+
+  if (!privateKey) {
+    throw new Error(
+      'CDP_API_KEY_PRIVATE_KEY environment variable is required. ' +
+      'This should be your EC private key in PEM format.'
+    );
+  }
+
+  return { apiKeyName, privateKey };
 }

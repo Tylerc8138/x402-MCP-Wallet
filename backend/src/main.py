@@ -23,6 +23,7 @@ from . import database as db
 from .onramp import (
     OnrampRateLimiter,
     generate_session_id,
+    get_coinbase_session_token,
     generate_coinbase_onramp_url,
     log_onramp_session,
     validate_onramp_request,
@@ -893,12 +894,26 @@ async def create_onramp_url(
     if not allowed:
         raise HTTPException(status_code=429, detail=error)
     
-    # Generate session ID
+    # Generate session ID for our tracking
     session_id = generate_session_id()
-    
-    # Generate Coinbase Onramp URL
+
+    # Get Coinbase session token
+    try:
+        coinbase_session_token = await get_coinbase_session_token(
+            wallet_address=wallet_address,
+            network=network,
+            assets=[asset]
+        )
+    except Exception as e:
+        logger.error(f"Failed to get Coinbase session token: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to create Coinbase session: {str(e)}"
+        )
+
+    # Generate Coinbase Onramp URL with session token
     onramp_url = generate_coinbase_onramp_url(
-        wallet_address=wallet_address,
+        session_token=coinbase_session_token,
         amount_usd=amount_usd,
         asset=asset,
         network=network

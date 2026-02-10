@@ -1,9 +1,14 @@
 """Coinbase Onramp integration for wallet funding."""
 import secrets
+import time
+import base64
+import httpx
 from datetime import datetime, timedelta
 from typing import Optional
 from urllib.parse import urlencode
 import json
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+import jwt
 
 from . import config
 
@@ -83,21 +88,164 @@ def generate_session_id() -> str:
     return secrets.token_hex(16)
 
 
+def generate_coinbase_jwt() -> str:
+    """
+    Generate a JWT for Coinbase API authentication.
+
+    CDP API keys use Ed25519 (EdDSA) for signing.
+    The API secret is a base64-encoded 64-byte key (32 bytes private + 32 bytes public).
+    """
+    api_key = config.COINBASE_API_KEY
+    api_secret = config.COINBASE_API_SECRET
+
+    if not api_key or not api_secret:
+        raise ValueError("COINBASE_API_KEY and COINBASE_API_SECRET must be configured")
+
+    # Current time
+    now = int(time.time())
+
+    # JWT payload for CDP API
+    payload = {
+        "sub": api_key,
+        "iss": "cdp",
+        "aud": ["cdp_service"],
+        "nbf": now,
+        "exp": now + 120,  # 2 minute expiry
+        "uris": ["POST api.developer.coinbase.com/onramp/v1/token"]
+    }
+
+    # JWT header - Ed25519 uses EdDSA algorithm
+    headers = {
+        "alg": "EdDSA",
+        "kid": api_key,
+        "typ": "JWT",
+        "nonce": secrets.token_hex(16)
+    }
+
+    try:
+        # Decode the base64 secret to get raw key bytes
+        secret_bytes = base64.b64decode(api_secret)
+
+        # The secret is 64 bytes: first 32 bytes are the Ed25519 private key seed
+        private_key_bytes = secret_bytes[:32]
+
+        # Create Ed25519 private key from raw bytes
+        private_key = Ed25519PrivateKey.from_private_bytes(private_key_bytes)
+
+        # Sign the JWT using EdDSA (Ed25519)
+        token = jwt.encode(
+            payload,
+            private_key,
+            algorithm="EdDSA",
+            headers=headers
+        )
+
+        return token
+
+    except Exception as e:
+        raise ValueError(f"Failed to generate JWT: {str(e)}")
+
+
+async def get_coinbase_session_token(
+    wallet_address: str,
+    network: str = "base",
+    assets: list[str] = None
+) -> str:
+    """
+    Get a session token from Coinbase Onramp API.
+
+    Args:
+        wallet_address: Destination wallet address
+        network: Blockchain network (base, ethereum, polygon)
+        assets: List of allowed assets (e.g., ["USDC", "ETH"])
+
+    Returns:
+        Session token string
+    """
+    if assets is None:
+        assets = ["USDC"]
+
+    # Generate JWT for authentication
+    jwt_token = generate_coinbase_jwt()
+
+    # Prepare request payload
+    payload = {
+        "addresses": [
+            {
+                "address": wallet_address,
+                "blockchains": [network]
+            }
+        ],
+        "assets": assets
+    }
+
+    # Make request to Coinbase API
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "https://api.developer.coinbase.com/onramp/v1/token",
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {jwt_token}",
+                "Content-Type": "application/json"
+            },
+            timeout=30.0
+        )
+
+        if response.status_code != 200:
+            error_detail = response.text
+            raise ValueError(f"Coinbase API error ({response.status_code}): {error_detail}")
+
+        data = response.json()
+
+        if "token" not in data:
+            raise ValueError("No token in Coinbase response")
+
+        return data["token"]
+
+
 def generate_coinbase_onramp_url(
+    session_token: str,
+    amount_usd: float,
+    asset: str = "USDC",
+    network: str = "base"
+) -> str:
+    """
+    Generate Coinbase Onramp URL with session token.
+
+    Args:
+        session_token: Session token from Coinbase API (includes wallet address)
+        amount_usd: Amount in USD
+        asset: Crypto asset (USDC, ETH, USDT)
+        network: Blockchain network (base, ethereum, polygon)
+
+    Returns:
+        Complete Coinbase Onramp URL
+    """
+    params = {
+        "sessionToken": session_token,
+        "defaultAsset": asset,
+        "defaultNetwork": network,
+        "presetFiatAmount": str(amount_usd)
+    }
+
+    return f"https://pay.coinbase.com/buy?{urlencode(params)}"
+
+
+def generate_coinbase_onramp_url_legacy(
     wallet_address: str,
     amount_usd: float,
     asset: str = "USDC",
     network: str = "base"
 ) -> str:
     """
-    Generate Coinbase Onramp URL with App ID.
-    
+    Generate Coinbase Onramp URL with App ID (legacy, pre-July 2025).
+
     Args:
         wallet_address: Destination wallet address
         amount_usd: Amount in USD
         asset: Crypto asset (USDC, ETH, USDT)
         network: Blockchain network (base, ethereum, polygon)
-    
+
     Returns:
         Complete Coinbase Onramp URL
     """
@@ -109,7 +257,7 @@ def generate_coinbase_onramp_url(
         "defaultNetwork": network,
         "presetFiatAmount": str(amount_usd)
     }
-    
+
     return f"https://pay.coinbase.com/buy?{urlencode(params)}"
 
 

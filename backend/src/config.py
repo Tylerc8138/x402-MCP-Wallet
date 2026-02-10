@@ -76,8 +76,15 @@ RATE_LIMIT_PURCHASE = os.getenv("RATE_LIMIT_PURCHASE", "10/minute")
 RATE_LIMIT_DNS = os.getenv("RATE_LIMIT_DNS", "30/minute")
 
 # Coinbase Onramp Configuration
-COINBASE_ONRAMP_APP_ID = os.getenv("COINBASE_ONRAMP_APP_ID", "")
+COINBASE_PROJECT_ID = os.getenv("COINBASE_PROJECT_ID", "")
+COINBASE_API_KEY = os.getenv("COINBASE_API_KEY", "")
+COINBASE_API_SECRET = os.getenv("COINBASE_API_SECRET", "")
+
+# Internal API key for MCP server -> backend authentication
 ONRAMP_API_KEY = os.getenv("ONRAMP_API_KEY", "")
+
+# Backwards compatibility
+COINBASE_ONRAMP_APP_ID = COINBASE_PROJECT_ID
 
 # Onramp Rate Limiting
 ONRAMP_MAX_REQUESTS_PER_HOUR = int(os.getenv("ONRAMP_MAX_REQUESTS_PER_HOUR", "10"))
@@ -85,8 +92,12 @@ ONRAMP_MAX_AMOUNT_PER_TX = int(os.getenv("ONRAMP_MAX_AMOUNT_PER_TX", "10000"))
 ONRAMP_MAX_AMOUNT_PER_DAY = int(os.getenv("ONRAMP_MAX_AMOUNT_PER_DAY", "50000"))
 
 # Validate onramp config in production
-if IS_PRODUCTION and not COINBASE_ONRAMP_APP_ID:
-    raise RuntimeError("COINBASE_ONRAMP_APP_ID is required in production!")
+if IS_PRODUCTION and not COINBASE_PROJECT_ID:
+    raise RuntimeError("COINBASE_PROJECT_ID is required in production!")
+if IS_PRODUCTION and not COINBASE_API_KEY:
+    raise RuntimeError("COINBASE_API_KEY is required in production!")
+if IS_PRODUCTION and not COINBASE_API_SECRET:
+    raise RuntimeError("COINBASE_API_SECRET is required in production!")
 if IS_PRODUCTION and not ONRAMP_API_KEY:
     raise RuntimeError("ONRAMP_API_KEY is required in production!")
 
